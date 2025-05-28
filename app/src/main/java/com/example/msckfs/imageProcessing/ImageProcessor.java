@@ -2,45 +2,42 @@ package com.example.msckfs.imageProcessing;
 
 import static org.opencv.core.Core.BORDER_CONSTANT;
 import static org.opencv.core.Core.BORDER_REFLECT_101;
-import java.util.concurrent.Flow.Publisher;
-import com.example.msckfs.FeatureIDtype;
+import static org.opencv.core.CvType.CV_8U;
+
 import com.example.msckfs.imuProcessing.ImuMessage;
-import com.example.msckfs.utils.MathUtils;
-import com.example.msckfs.utils.MathUtils.*;
+import com.example.msckfs.utils.Matx33d;
 import com.example.msckfs.utils.Matx33f;
+import com.example.msckfs.utils.Vec2d;
 import com.example.msckfs.utils.Vec3d;
 import com.example.msckfs.utils.Vec3f;
 import com.example.msckfs.utils.Vec4d;
 
-import org.apache.commons.math3.linear.ArrayRealVector;
-import org.apache.commons.math3.linear.RealMatrix;
-import org.apache.commons.math3.linear.RealVector;
 import org.opencv.calib3d.Calib3d;
 import org.opencv.core.Core;
+import org.opencv.core.KeyPoint;
 import org.opencv.core.Mat;
 import org.opencv.core.MatOfByte;
 import org.opencv.core.MatOfFloat;
 import org.opencv.core.MatOfInt;
+import org.opencv.core.MatOfKeyPoint;
 import org.opencv.core.MatOfPoint2f;
 import org.opencv.core.Point;
+import org.opencv.core.Range;
 import org.opencv.core.Scalar;
 import org.opencv.core.Size;
 import org.opencv.core.TermCriteria;
 import org.opencv.video.Video;
 import org.opencv.features2d.FastFeatureDetector;
-import org.opencv.calib3d.Calib3d.*;
 
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Iterator;
+import java.util.Comparator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.Flow;
 import java.util.concurrent.SubmissionPublisher;
+import java.util.stream.Collectors;
 
 public class ImageProcessor {
 
@@ -65,7 +62,7 @@ public class ImageProcessor {
     private static final List<ImuMessage> imuMsgBuffer = Collections.synchronizedList(new LinkedList<>()); // TODO: Collections.synchronizedList(new ArrayList<>()); in constructor, non-static? Possible?
 
 
-    // Previous and current images //TODO: data types
+    // Previous and current images
     private ImageMessage cam0PrevImgMsg;
     private ImageMessage cam0CurrImgMsg;
 
@@ -77,6 +74,12 @@ public class ImageProcessor {
     private GridFeatures prevFeatures;
     private GridFeatures currFeatures;
 
+    // (Python) load config
+    // Camera calibration parameters
+    private final Vec2d cam0Resolution;
+    private final Vec4d cam0Intrinsics;
+    private final String cam0DistortionModel;
+    private final Vec4d cam0DistortionCoeffs;
     private Mat TCam0Imu;
     private Mat RCam0Imu;
     private Mat tCam0Imu;
@@ -87,21 +90,17 @@ public class ImageProcessor {
         this.isFirstImg = true;
         this.next_feature_id = 0;
         this.featureDetector = FastFeatureDetector.create(processorConfig.fast_threshold) // TODO: threshold
-        this.imuMsgBuffer = new ArrayBlockingQueue(); //TODO: maybe LinkedBlockingQueue? In Python just '[]'. Wait til unterstand code better.
+        // this.imuMsgBuffer = new ArrayBlockingQueue(); //TODO: maybe LinkedBlockingQueue? In Python just '[]'. Wait til unterstand code better.
             //TODO: imuMsgBuffer Capacity
-        this.cam0_curr_img_msg = null;
-        this.cam0_prev_img_msg = null;
+        this.cam0CurrImgMsg = null;
+        this.cam0PrevImgMsg = null;
         this.featurePublisher = featurePublisher;
-    }
 
+        cam0Resolution = processorConfig.cam0Resolution;
+        cam0Intrinsics = processorConfig.cam0Intrinsics;
+        cam0DistortionModel = processorConfig.cam0DistortionModel;
+        cam0DistortionCoeffs = processorConfig.cam0DistortionCoeffs;
 
-
-    public boolean loadParameters() {
-        //TODO
-    }
-
-    public boolean initialize() {
-        //TODO
     }
 
 
@@ -171,10 +170,112 @@ public class ImageProcessor {
 
         // Initialize the current features to empty vectors. // TODO: decide on GridFeaturesDatatype and impl.
         currFeatures = new GridFeatures();
-        for (int code = 0; code < processorConfig.grid_row*processorConfig.grid_col; code++) {
-            currFeatures.put(code, new ArrayList<>());
-        }
+        currFeatures.init(processorConfig);
     }
+
+    public void pruneGridFeatures() {
+        for (Map.Entry<Integer, List<FeatureMetaData>> item : currFeatures.entrySet()) {
+            List<FeatureMetaData> gridFeatures = item.getValue();
+            // Continue if the number of features in this grid does
+            // not exceed the upper bound.
+            if (gridFeatures.size() <= processorConfig.gridMaxFeatureNum) continue;
+            item.getValue().sort((f0, f1) -> Integer.compare(f1.lifetime, f0.lifetime)); // descending order
+            gridFeatures.subList(processorConfig.gridMaxFeatureNum,gridFeatures.size()).clear();
+            assert(gridFeatures.size() == processorConfig.gridMaxFeatureNum); // TODO: remove after successful run
+
+        }
+
+    }
+
+    public void addNewFeatures() {
+        final Mat currImg = cam0CurrImgMsg.image;
+
+        // Size of each grid.
+        int gridHeight = currImg.rows() / processorConfig.gridRow;
+        int gridWidth = currImg.cols() / processorConfig.gridCol;
+
+        // Create a mask to avoid redetecting existing features.
+        Mat mask = new Mat(currImg.rows(), currImg.cols(), CV_8U, new Scalar(1));
+
+        for (Map.Entry<Integer, List<FeatureMetaData>> gridFeatures: currFeatures.entrySet()) {
+            for (FeatureMetaData feature : gridFeatures.getValue()) {
+                final int x = (int) feature.cam0_point.x;
+                final int y = (int) feature.cam0_point.y;
+
+                int upLim = y-2, bottomLim = y+3, leftLim = x-2, rightLim = x+3;
+                if (upLim < 0) upLim = 0;
+                if (bottomLim > currImg.rows()) bottomLim = currImg.rows();
+                if (leftLim < 0) leftLim = 0;
+                if (rightLim > currImg.cols()) rightLim = currImg.cols();
+
+                Range rowRange = new Range(upLim, bottomLim);
+                Range colRange = new Range(leftLim, rightLim);
+                mask.put // TODO: what is supposed to happen here?
+            }
+
+            // Detect new features
+            MatOfKeyPoint newFeatures = new MatOfKeyPoint();
+            featureDetector.detect(currImg, newFeatures);
+        }
+
+    }
+}
+
+
+
+    public void initializeFirstFrame() {
+        // Size of each grid.
+        final Mat img = cam0CurrImgMsg.image;
+        int gridHeight = img.rows() / processorConfig.gridRow;
+        int gridWidth = img.cols() / processorConfig.gridCol;
+
+        // Detect new features on the first image.
+        MatOfKeyPoint newFeatures = new MatOfKeyPoint();
+        featureDetector.detect(img, newFeatures);
+
+        // Find the stereo matched points for the newly
+        // detected features. (skipped)
+        List<Point> cam0Points = newFeatures.toList().stream().map(keyPoint -> keyPoint.pt).collect(Collectors.toList());
+
+        // (skipped)
+
+        // Group the features into grids
+        GridFeatures gridNewFeatures = new GridFeatures();
+        gridNewFeatures.init(processorConfig);
+
+        for (int i = 0; i < cam0Points.size(); i++) {
+            final Point cam0Point = cam0Points.get(i);
+            final float response = newFeatures.get(i).response;
+
+            int row = (int) cam0Point.y / gridHeight;
+            int col = (int) cam0Point.x / gridWidth;
+            int code = row * processorConfig.gridCol + col;
+
+            FeatureMetaData newFeature = new FeatureMetaData(response, cam0Point);
+            gridNewFeatures.get(code).add(newFeature);
+        }
+
+        // Sort the new features in each grid based on its response.
+        for (Map.Entry<Integer, List<FeatureMetaData>> item : gridNewFeatures.entrySet()) {
+            item.getValue().sort((f0, f1) -> Float.compare(f1.response, f0.response)); // descending order
+        }
+
+
+        // Collect new features within each grid with high response.
+        for (int code = 0; code < processorConfig.gridRow*processorConfig.gridCol; code++) {
+            List<FeatureMetaData> featuresThisGrid = currFeatures.get(code);
+            List<FeatureMetaData> newFeaturesThisGrid = gridNewFeatures.get(code);
+
+            for (int k = 0; k < processorConfig.gridMinFeatureNum && k < newFeaturesThisGrid.size(); k++) {
+                featuresThisGrid.add(newFeaturesThisGrid.get(k));
+                featuresThisGrid.get(featuresThisGrid.size()-1).setId(next_feature_id++);
+                featuresThisGrid.get(featuresThisGrid.size()-1).setLifetime(1);
+            }
+        }
+
+    }
+
+
 
     public void predictFeatureTracking(final MatOfPoint2f inputPts, final Matx33f Rpc, final Vec4d intrinsics, MatOfPoint2f compensatedPts) {
         List<Point> ptsList = inputPts.toList();
@@ -187,11 +288,8 @@ public class ImageProcessor {
         compPtsList = compPtsList.subList(0, ptsList.size());
 
         // Intrinsic matrix.
-        Matx33f K = new Matx33f(new float[] { // TODO: why the conversion?
-                (float) intrinsics.get(0), 0.0f, (float) intrinsics.get(2),
-                0.0f, (float) intrinsics.get(1), (float) intrinsics.get(3),
-                0.0f, 0.0f, 1.0f});
-        Matx33f H = (Matx33f) K.matMul(Rpc).matMul(K.inv());
+        Matx33d K = getK(intrinsics);
+        Matx33d H = (Matx33d) K.matMul(Rpc).matMul(K.inv());
 
         for (int i = 0; i < ptsList.size(); i++) {
             Vec3d p1 = new Vec3d(ptsList.get(i).x, ptsList.get(i).y, 1.0d); // Vec3d instead of Vec3f
@@ -205,33 +303,20 @@ public class ImageProcessor {
 
     }
 
-
-    //TODO: imu msg datatype?
-    public void imuCallback(Object ) {
-        //TODO
+    private Mat getK(final Vec4d intrinsics) {
+        return Matx33d.create(new double[] { // TODO: originally float
+                intrinsics.get(0), 0.0f, intrinsics.get(2),
+                0.0f, intrinsics.get(1), intrinsics.get(3),
+                0.0f, 0.0f, 1.0f});
     }
 
+
+
     public void createImagePyramids() {
-        //TODO
-        Mat curr_cam0_img = cam0_curr_img_msg.image; // TODO: img_msg format / data type?
+        final Mat curr_cam0_img = cam0CurrImgMsg.image;
         Video.buildOpticalFlowPyramid(curr_cam0_img, currCam0Pyramid, new Size(processorConfig.patch_size, processorConfig.patch_size), processorConfig.pyramid_levels, true, BORDER_REFLECT_101, BORDER_CONSTANT, false);
     }
 
-    public void initializeFirstFrame() {
-        //TODO
-    }
-
-    public void drawFeatures() {
-
-    }
-
-    public void addNewFeatures() {
-
-    }
-
-    public void pruneGridFeatures() {
-
-    }
 
     public void publish() {
 
@@ -250,33 +335,46 @@ public class ImageProcessor {
 
         List<Point> currCam0PointsUndistorted = new ArrayList<>();
 
-        undistortPoints(); // TODO
+        undistortPoints(currCam0Points, cam0Intrinsics, cam0DistortionModel, cam0distortionCoeffs, currCam0PointsUndistorted); // TODO
 
         List<FeatureMeasurement> features = new ArrayList<>();
         for (int i = 0; i < currIds.size(); i++) {
             features.add(new FeatureMeasurement(currIds.get(i), currCam0PointsUndistorted.get(i).x, currCam0PointsUndistorted.get(i).y));
         }
 
-
-        // TODO: how to publish?
-        FeatureMessage featureMessage = new FeatureMessage(getEp)
-        featurePublisher.submit(features);
+        FeatureMessage featureMessage = new FeatureMessage(cam0CurrImgMsg.timestamp, features);
+        featurePublisher.submit(featureMessage);
 
         // Publish tracking info. // TODO? For Debug?
 
 
     }
 
-    public void undistortPoints() {
-        // TODO
+    public void undistortPoints(final MatOfPoint2f ptsIn, final Vec4d intrinsics, final String distortionModel, final Vec4d distortionCoeffs, final MatOfPoint2f ptsOut, final Matx33d rectificationMatrix, final Vec4d newIntrinsics) {
+
+        if (ptsIn.total() == 0) return;
+
+        final Matx33d K = getK(intrinsics);
+        final Matx33d newK = getK(newIntrinsics);
+
+        if (distortionModel.equals("equidistant")) {
+            Calib3d.fisheye_undistortPoints(ptsIn, K.mat, distortionCoeffs, rectificationMatrix.mat, newK.mat);
+        } else {
+            Calib3d.undistortPoints(ptsIn, ptsOut, K.mat, distortionCoeffs, rectificationMatrix.mat, newK.mat);
+        }
+
+    }
+
+    public void undistortPoints(final MatOfPoint2f ptsIn, final Vec4d intrinsics, final String distortionModel, final Vec4d distortionCoeffs, final MatOfPoint2f ptsOut) {
+        undistortPoints(ptsIn, intrinsics, distortionModel, distortionCoeffs, ptsOut, Matx33d.eye(), new Vec4d(1,1,0,0));
     }
 
     public void trackFeatures() {
 
-        // TODO: " static int grid_height" <- Why "static"?
-        // Size of each grid //TODO: which way to calculate it? Like in C++ or in Python?
-        int grid_height = cam0CurrImg.rows() / processorConfig.grid_row;
-        int grid_width = cam0CurrImg.cols() / processorConfig.grid_col;
+        // Size of each grid
+        Mat cam0CurrImg = cam0CurrImgMsg.image;
+        int grid_height = cam0CurrImg.rows() / processorConfig.gridRow;
+        int grid_width = cam0CurrImg.cols() / processorConfig.gridCol;
 
         // Compute a rough relative rotation which takes a vector
         // from the previous frame to the current frame.
@@ -286,19 +384,17 @@ public class ImageProcessor {
         // Organize the features in the previous image.
         List<Integer> prevIds = new ArrayList<>();
         List<Integer> prevLifetime = new ArrayList<>();
-        MatOfPoint2f prevCam0Points = new MatOfPoint2f(); // TODO: put anything in the constructor?
-
-        prevCam0Points.put(0,0, new Point());
-        for (FeatureMetaData feature : prevFeatures) {
-            // TODO: what exactly should be iterated over?
-            // TODO: iterate
-            prevIds.add(feature.id);
-            prevLifetime.add(feature.lifetime);
-            prevCam0Points.add(feature.cam0_point);
+        MatOfPoint2f prevCam0Points = new MatOfPoint2f();
+        List<Point> prevCam0PtsList = prevCam0Points.toList(); // TODO: make sure prevCam0Points is converted back into Mat if necessary
+        for (Map.Entry<Integer, List<FeatureMetaData>> gridFeatures : prevFeatures.entrySet()) {
+            for (FeatureMetaData prevFeature : gridFeatures.getValue()) {
+                prevIds.add(prevFeature.id);
+                prevLifetime.add(prevFeature.lifetime);
+                prevCam0PtsList.add(prevFeature.cam0_point);
         }
 
         // Number of the features before tracking.
-        int before_tracking = prevCam0Points.size();
+        int before_tracking = prevCam0PtsList.size();
 
         // Abort tracking if there is no features in
         // the previous frame.
@@ -306,9 +402,8 @@ public class ImageProcessor {
 
         // Track features using LK optical flow method.
         // TODO: convert to list and then later call .fromList on them
-        MatOfPoint2f currCam0Points; // TODO: C++ code says it's in a vector! Has to be iterable, for loop. But clashes with calcOpticalFlowPyrLK?
-        MatOfByte trackInliers = new MatOfByte(); // TODO: CHANGE OBJECT DATATYPE
-                // TODO: do I need to pass smt in constructor? MatOfByte
+        MatOfPoint2f currCam0Points;
+        MatOfByte trackInliers = new MatOfByte();
 
         predictFeatureTracking(prevCam0Points, cam0Rpc, processorConfig.cam0Intrinsics, currCam0Points); // TODO
 
@@ -390,13 +485,15 @@ public class ImageProcessor {
 
             }
         } //for
-        currFeatures.put(). // TODO: add to map
+        currFeatures.put(); // TODO: add to map
         // TODO
     }
 
     // TODO: replace all the Vec3f etc. with Mat, in cases where Mat needed to be casted to Vec3f as a result?
     // TODO: Alternatively: instead of casting, create a .fromMat(Mat) method
-    public void integrateImuData(Matx33f cam0Rpc) {
+    public void integrateImuData(Mat cam0Rpc) {
+        assert(Matx33f.isMatx33f(cam0Rpc));
+
         // Find the start and the end limit within the imu msg buffer.
 
         int beginIter = 0;
@@ -460,7 +557,4 @@ public class ImageProcessor {
         // TODO: Python commented out the call of this method. Maybe runs without?
 
     }
-
-
-    // TODO: add a "Destructor"? ~ImageProcessor()
 }

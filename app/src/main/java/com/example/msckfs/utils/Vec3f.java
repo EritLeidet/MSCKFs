@@ -3,18 +3,18 @@ package com.example.msckfs.utils;
 import org.opencv.core.Mat;
 import org.opencv.core.MatOfFloat;
 
-public class Vec3f extends MatOfFloat {
+public class Vec3f extends Vecf {
 
+    private static final int vecLength = 3;
     public Vec3f() {
-        super(0f,0f,0f);
+        super(vecLength);
     }
 
     public Vec3f(float x, float y, float z) {
-        super(x,y,z);
+        super(vecLength, x,y,z);
     }
 
-    public float get(int index) {
-        if (index > 2 || index < 0 ) throw new IllegalArgumentException("Vec3f access index must be between 0 and 2");
-        return super.at(float.class, index, 0).getV();
+    public Vec3f(Mat mat) {
+        super(vecLength, mat);
     }
 }

@@ -53,9 +53,5 @@ public class MathUtils {
 
     }
 
-    public static void matrixMultiplication(Mat src1, Mat src2, Mat dest) {
-        // TODO: https://stackoverflow.com/questions/10168058/basic-matrix-multiplication-in-opencv-for-android
-        // TODO: // "For src3 you could use Mat.zeros(rows, cols CvType): Core.gemm(mat1, mat2.t(), 1, Mat.zeros(rows, rows, MATRIX_TYPE) , 0, mat3, 0);"
-        Core.gemm(src1, src2, 1, null, 0, dest, 0);
-    }
+
 }

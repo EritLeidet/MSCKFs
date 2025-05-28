@@ -5,13 +5,22 @@ import org.opencv.core.Point;
 
 public class FeatureMetaData {
 
-    public final int id; // TODO: here 'int' like in Python, but FeatureIDType (unsigned long long) in C++
-                        // TODO: document, what code from Python and what from C++
+    public int id;
     public final float response;
-    public final int lifetime;
-
+    public int lifetime;
     public final Point cam0_point;
-    public FeatureMetaData() {
-        ArrayRealVector
+    public FeatureMetaData(float response, Point cam0Point) {
+        this.response = response;
+        this.cam0_point = cam0Point;
+
+        // TODO: do these init vals matter ?
+        this.id = -1;
+        this.lifetime = -1;
     }
+
+    public void setId(int id) {this.id = id;}
+
+    public void setLifetime(int lifetime) {this.lifetime = lifetime;}
+
+
 }
