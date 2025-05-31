@@ -29,6 +29,7 @@ import org.opencv.core.TermCriteria;
 import org.opencv.video.Video;
 import org.opencv.features2d.FastFeatureDetector;
 
+import java.security.Key;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -38,6 +39,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.SubmissionPublisher;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 public class ImageProcessor {
 
@@ -173,6 +175,10 @@ public class ImageProcessor {
         currFeatures.init(processorConfig);
     }
 
+    public void drawFeatures() {
+
+    }
+
     public void pruneGridFeatures() {
         for (Map.Entry<Integer, List<FeatureMetaData>> item : currFeatures.entrySet()) {
             List<FeatureMetaData> gridFeatures = item.getValue();
@@ -210,42 +216,80 @@ public class ImageProcessor {
 
                 Range rowRange = new Range(upLim, bottomLim);
                 Range colRange = new Range(leftLim, rightLim);
-                mask.put // TODO: what is supposed to happen here?
+                mask.submat(rowRange, colRange).setTo(new Scalar(0));
             }
+        } // loop
 
-            // Detect new features
-            MatOfKeyPoint newFeatures = new MatOfKeyPoint();
-            featureDetector.detect(currImg, newFeatures);
+        // Detect new features
+        MatOfKeyPoint newFeatures = new MatOfKeyPoint();
+        List<KeyPoint> newFeatList = newFeatures.toList(); // TODO: if newFeature-List is edited, the orginal MatOf needs to be updated!(fromList())
+        featureDetector.detect(currImg, newFeatures, mask);
+
+        // Collect the new detected features based on the grid.
+        // Select the ones with top response within each grid afterwards
+        List<List<KeyPoint>> newFeatureSieve = Stream.generate(() -> new ArrayList<KeyPoint>()).limit((long) processorConfig.gridRow * processorConfig.gridCol).collect(Collectors.toList()); // List of empty lists.
+
+        for (KeyPoint feature: newFeatList) {
+            int row = (int) feature.pt.y / gridHeight;
+            int col = (int) feature.pt.x / gridWidth;
+            newFeatureSieve.get(row * processorConfig.gridCol + col).add(feature);
+        }
+
+        newFeatList.clear(); // TODO: update MatOfKeyPoint accordingly!, later, after the list is last edited
+        for (List<KeyPoint> item : newFeatureSieve) {
+            if (item.size() > processorConfig.gridMaxFeatureNum) {
+                item.sort((kp0, kp1) -> Float.compare(kp1.response, kp0.response) ); // descending order
+                item.subList(processorConfig.gridMaxFeatureNum,item.size()).clear();
+
+            }
+            newFeatList.addAll(item);
+        }
+
+        int detectedNewFeatures = newFeatList.size();
+
+        // Find the stereo matched points for the newly
+        // detected features.
+        // (skipped. cam0_points used instead of cam0_inliers from now on)
+
+        List<Point> cam0Points = newFeatList.stream().map(keyPoint -> keyPoint.pt).collect(Collectors.toList());
+
+
+        // Group the features into grids
+        GridFeatures gridNewFeatures = groupFeatures(cam0Points, newFeatList, gridHeight, gridWidth);
+
+        int newAddedFeatureNum = 0;
+        // Collect new features within each grid with high response.
+        // TODO: loop not yet accurate
+        for (int code = 0; code < processorConfig.gridRow*processorConfig.gridCol; code++) {
+            List<FeatureMetaData> featuresThisGrid = currFeatures.get(code);
+            List<FeatureMetaData> newFeaturesThisGrid = gridNewFeatures.get(code);
+
+            if (featuresThisGrid.size() >= processorConfig.gridMinFeatureNum) continue;
+
+            int vacancyNum = processorConfig.gridMinFeatureNum - featuresThisGrid.size();
+            for (int k = 0; k < vacancyNum && vacancyNum < newFeaturesThisGrid.size(); k++) {
+                featuresThisGrid.add(newFeaturesThisGrid.get(k));
+                featuresThisGrid.get(featuresThisGrid.size()-1).setId(next_feature_id++);
+                featuresThisGrid.get(featuresThisGrid.size()-1).setLifetime(1);
+
+                newAddedFeatureNum++;
+            }
         }
 
     }
-}
 
-
-
-    public void initializeFirstFrame() {
-        // Size of each grid.
-        final Mat img = cam0CurrImgMsg.image;
-        int gridHeight = img.rows() / processorConfig.gridRow;
-        int gridWidth = img.cols() / processorConfig.gridCol;
-
-        // Detect new features on the first image.
-        MatOfKeyPoint newFeatures = new MatOfKeyPoint();
-        featureDetector.detect(img, newFeatures);
-
-        // Find the stereo matched points for the newly
-        // detected features. (skipped)
-        List<Point> cam0Points = newFeatures.toList().stream().map(keyPoint -> keyPoint.pt).collect(Collectors.toList());
-
-        // (skipped)
-
+    /**
+     * Group features into grid and sort features descending by response
+     * @param cam0Points
+     */
+    private GridFeatures groupFeatures(List<Point> cam0Points, List<KeyPoint> newFeatList, int gridHeight, int gridWidth) {
         // Group the features into grids
         GridFeatures gridNewFeatures = new GridFeatures();
         gridNewFeatures.init(processorConfig);
 
         for (int i = 0; i < cam0Points.size(); i++) {
             final Point cam0Point = cam0Points.get(i);
-            final float response = newFeatures.get(i).response;
+            final float response = newFeatList.get(i).response;
 
             int row = (int) cam0Point.y / gridHeight;
             int col = (int) cam0Point.x / gridWidth;
@@ -260,6 +304,35 @@ public class ImageProcessor {
             item.getValue().sort((f0, f1) -> Float.compare(f1.response, f0.response)); // descending order
         }
 
+        return gridNewFeatures;
+    }
+
+
+
+
+
+
+    public void initializeFirstFrame() {
+        // Size of each grid.
+        final Mat img = cam0CurrImgMsg.image;
+        int gridHeight = img.rows() / processorConfig.gridRow;
+        int gridWidth = img.cols() / processorConfig.gridCol;
+
+        // Detect new features on the first image.
+        MatOfKeyPoint newFeatures = new MatOfKeyPoint();
+        featureDetector.detect(img, newFeatures);
+
+        // Find the stereo matched points for the newly
+        // detected features.
+        // (skipped. cam0_points used instead of cam0_inliers from now on.)
+        // TODO: info: code duplication. Make sure stays consistent
+        List<KeyPoint> newFeatList = newFeatures.toList();
+        List<Point> cam0Points = newFeatList.stream().map(keyPoint -> keyPoint.pt).collect(Collectors.toList());
+
+        // (skipped)
+
+        // Group the features into grids
+        GridFeatures gridNewFeatures = groupFeatures(cam0Points, newFeatList, gridHeight, gridWidth);
 
         // Collect new features within each grid with high response.
         for (int code = 0; code < processorConfig.gridRow*processorConfig.gridCol; code++) {
@@ -304,7 +377,7 @@ public class ImageProcessor {
     }
 
     private Mat getK(final Vec4d intrinsics) {
-        return Matx33d.create(new double[] { // TODO: originally float
+        return Matx33d.create(new double[] { // TODO: originally float[]. Maybe change back?
                 intrinsics.get(0), 0.0f, intrinsics.get(2),
                 0.0f, intrinsics.get(1), intrinsics.get(3),
                 0.0f, 0.0f, 1.0f});
