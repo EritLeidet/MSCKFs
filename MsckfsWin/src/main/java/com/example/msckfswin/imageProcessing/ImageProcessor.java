@@ -4,6 +4,7 @@ import static org.opencv.core.Core.BORDER_CONSTANT;
 import static org.opencv.core.Core.BORDER_REFLECT_101;
 import static org.opencv.core.CvType.CV_8U;
 
+import com.example.msckfswin.config.ProcessorConfig;
 import com.example.msckfswin.imuProcessing.ImuMessage;
 import com.example.msckfswin.utils.Matx33d;
 import com.example.msckfswin.utils.Matx33f;
@@ -90,6 +91,11 @@ public class ImageProcessor {
         this.cam0PrevImgMsg = null;
         this.featurePublisher = featurePublisher;
 
+        this.currFeatures = new GridFeatures();
+        this.prevFeatures = new GridFeatures();
+        this.currFeatures.init(processorConfig);
+        this.prevFeatures.init(processorConfig);
+
         cam0Resolution = processorConfig.cam0Resolution;
         cam0Intrinsics = processorConfig.cam0Intrinsics;
         cam0DistortionModel = processorConfig.cam0DistortionModel;
@@ -103,7 +109,7 @@ public class ImageProcessor {
 
         // Get the current image.
         cam0CurrImgMsg = cam0imageMsg;
-        createImagePyramids();
+        // createImagePyramids(); TODO: uncomment or remove all code related to pyramids
 
 
         // Detect features in the first frame.
@@ -428,7 +434,7 @@ public class ImageProcessor {
     }
 
     public void undistortPoints(final MatOfPoint2f ptsIn, final MatOfDouble intrinsics, final String distortionModel, final MatOfDouble distortionCoeffs, final MatOfPoint2f ptsOut) {
-        undistortPoints(ptsIn, intrinsics, distortionModel, distortionCoeffs, ptsOut, Matx33d.eye(), Vec4d.createVec4d(1, 1, 0, 0));
+        undistortPoints(ptsIn, intrinsics, distortionModel, distortionCoeffs, ptsOut, Matx33d.eye(), Vec4d.create(1, 1, 0, 0));
     }
 
     public void trackFeatures() {
@@ -550,7 +556,7 @@ public class ImageProcessor {
         // Compute the mean angular velocity in the IMU frame.
         MatOfFloat mean_ang_vel = Vec3f.create();
         for (int i = beginIter; i < endIter; i++) {
-            Core.add(mean_ang_vel, imuMsgBuffer.get(i).angularVelocity, mean_ang_vel); // Python
+            Core.add(mean_ang_vel, new MatOfDouble(imuMsgBuffer.get(i).angularVelocity.toArray()), mean_ang_vel); // Python
         }
 
 

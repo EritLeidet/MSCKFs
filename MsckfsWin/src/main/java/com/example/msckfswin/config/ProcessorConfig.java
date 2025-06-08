@@ -1,10 +1,5 @@
-package com.example.msckfswin.imageProcessing;
+package com.example.msckfswin.config;
 
-import com.example.msckfswin.utils.Vec2d;
-import com.example.msckfswin.utils.Vec4d;
-
-import org.apache.commons.math3.linear.RealMatrix;
-import org.opencv.core.Mat;
 import org.opencv.core.MatOfDouble;
 import org.opencv.core.MatOfInt;
 

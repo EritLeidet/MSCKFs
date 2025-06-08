@@ -2,13 +2,14 @@ package com.example.msckfswin.imuProcessing;
 
 import com.example.msckfswin.utils.Vec3f;
 
+import org.apache.commons.math3.linear.RealVector;
 import org.opencv.core.MatOfFloat;
 
 public class ImuMessage {
 
-    // public final Object orientationCovariance;
-    public final MatOfFloat angularVelocity; // vec3
-    // public final Object linearAcceleration;
+    // TODO: used to be MatOfFloat, but changed bc. MSCKF Matrix type
+    public final RealVector angularVelocity; // vec3
+    public final RealVector linearAcceleration; // vec3
 
     public final long timestamp; // unix time
 

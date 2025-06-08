@@ -3,6 +3,9 @@ package com.example.msckfswin.utils;
 import org.opencv.core.Mat;
 import org.opencv.core.MatOfDouble;
 
+
+// TODO: maybe only use asserts, and remove all usages of create
+
 public class Vec3d {
 
     private Vec3d() {}

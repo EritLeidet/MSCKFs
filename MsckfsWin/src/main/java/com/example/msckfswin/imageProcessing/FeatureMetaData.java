@@ -1,6 +1,5 @@
 package com.example.msckfswin.imageProcessing;
 
-import org.apache.commons.math3.linear.ArrayRealVector;
 import org.opencv.core.Point;
 
 public class FeatureMetaData {

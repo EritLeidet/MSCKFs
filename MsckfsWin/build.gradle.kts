@@ -7,4 +7,7 @@ java {
 }
 dependencies {
     implementation(files("libs\\opencv-4110.jar"))
+
+    // https://mvnrepository.com/artifact/org.apache.commons/commons-lang3
+    implementation("org.apache.commons:commons-lang3:3.0")
 }

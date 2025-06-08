@@ -1,12 +1,28 @@
 package com.example.msckfswin.utils;
 
-import org.apache.commons.math3.linear.Array2DRowRealMatrix;
+
 import org.apache.commons.math3.linear.RealMatrix;
 import org.apache.commons.math3.linear.RealVector;
+import org.opencv.core.Mat;
+import org.opencv.core.MatOfDouble;
 
 public class MathUtils {
 
     // TODO: copy unit tests
+
+    // TODO: implementations
+
+    public static RealMatrix skewSymmetric(RealVector mat) {
+        return null; //TODO
+    }
+
+    public static Mat quaternionToRotation(Mat mat) {
+        return null; //TODO
+    }
+
+    public static void quaternionNormalize(Mat mat) {}  // TODO
+
+    public static MatOfDouble rotationToQuaternion(Mat mat) {return null;} // TODO
 
     /*
      *  @brief Create a skew-symmetric matrix from a 3-element vector.
@@ -16,6 +32,7 @@ public class MathUtils {
      *          [-w2  w1   0]
      */
 
+    /*
     public static RealMatrix skewSymmetric(final RealVector w) {
         assert(w != null);
         RealMatrix out = new Array2DRowRealMatrix(3,3);
@@ -26,6 +43,8 @@ public class MathUtils {
         out.setEntry(0,2,w.getEntry(1));
         return out; //TODO
     }
+
+     */
 
     /**
     inline Eigen::Matrix3d skewSymmetric(const Eigen::Vector3d& w) {
@@ -43,6 +62,7 @@ public class MathUtils {
     }
      **/
 
+    /*
     public static RealMatrix quaternionToRotation(RealVector q) {
         RealMatrix out = new Array2DRowRealMatrix(3,3);
 
@@ -50,6 +70,8 @@ public class MathUtils {
         return out; //TODO
 
     }
+
+     */
 
 
 }

@@ -7,11 +7,11 @@ import org.opencv.core.MatOfDouble;
 public abstract class Vec4d {
 
     private static final int vecLength = 4;
-    public static MatOfDouble createVec4d() {
+    public static MatOfDouble create() {
         return new MatOfDouble(0d,0d,0d,0d);
     }
 
-    public static MatOfDouble createVec4d(double... data) {
+    public static MatOfDouble create(double... data) {
         return Vecd.create(vecLength, data);
     }
 

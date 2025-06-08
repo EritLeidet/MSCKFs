@@ -1,5 +1,9 @@
 package com.example.msckfswin.imageProcessing;
 
+import org.opencv.core.MatOfDouble;
+
+import java.util.Map;
+
 public class FeatureMeasurement {
 
     public final int id;
@@ -13,5 +17,14 @@ public class FeatureMeasurement {
         this.id = id;
         this.u0 = u0;
         this.v0 = v0;
+    }
+
+    @Override
+    public String toString() {
+        return "FeatureMeasurement{" +
+                "id=" + id +
+                ", u0=" + u0 +
+                ", v0=" + v0 +
+                '}';
     }
 }

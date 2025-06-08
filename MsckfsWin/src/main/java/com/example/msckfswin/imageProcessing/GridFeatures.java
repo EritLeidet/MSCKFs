@@ -1,5 +1,7 @@
 package com.example.msckfswin.imageProcessing;
 
+import com.example.msckfswin.config.ProcessorConfig;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;

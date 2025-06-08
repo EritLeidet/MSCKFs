@@ -16,5 +16,13 @@ public abstract class Matx {
         return mat.channels() == 1 && mat.rows() == numRows && mat.cols() == numCols && mat.type() == type;
     }
 
+    public static double getD(Mat mat, int row, int col) {
+        return mat.at(double.class, row, col).getV();
+    }
+
+    public static void setD(Mat mat, int row, int col, double val) {
+        mat.at(double.class, row, col).setV(val);
+    }
+
 
 }

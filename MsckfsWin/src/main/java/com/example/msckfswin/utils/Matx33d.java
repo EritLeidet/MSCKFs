@@ -2,8 +2,6 @@ package com.example.msckfswin.utils;
 import static org.opencv.core.CvType.CV_64F;
 
 import org.opencv.core.Mat;
-
-// TODO: do the same thing with vec?
 public abstract class Matx33d {
 
     private static final int type = CV_64F;
