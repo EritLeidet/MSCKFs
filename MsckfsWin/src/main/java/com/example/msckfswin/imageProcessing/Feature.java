@@ -20,10 +20,10 @@ public class Feature {
 
     public final int id;
 
-    public final Map<Integer, MatOfDouble> observations; // <int, vec2d>. Originally vec4d.
+    public final Map<Integer, RealVector> observations; // <int, vec2d>. Originally vec4d.
 
     // 3d postion of the feature in the world frame.
-    public MatOfDouble position = Vec3d.create();
+    public RealVector position = Vec3d.create();
     public Feature(int id,) {
         this.id = id;
         this.observations = new HashMap<>();
@@ -43,7 +43,7 @@ public class Feature {
         // This direction is represented in the world frame.
         RealVector featureDirection = createRealVector(new double[]{,,1.0}); // TODO
         featureDirection = featureDirection.mapMultiply( 1 / featureDirection.getNorm());
-        featureDirection = firstCamPose.R.preMultiply(featureDirection);
+        featureDirection = firstCamPose.R.preMultiply(featureDirection); // TODO: preMultiply or operate()? https://stackoverflow.com/questions/34754071/how-do-i-postmultiply-a-realmatrix-by-a-realvector-org-apache-commons-commons-m
 
         // Compute the translation between the first frame
         // and the last frame. We assume the first frame and

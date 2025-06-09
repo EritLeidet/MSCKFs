@@ -5,6 +5,7 @@ import static org.opencv.core.CvType.CV_64F;
 import com.example.msckfswin.imuProcessing.ImuState;
 
 
+import org.apache.commons.math3.linear.RealMatrix;
 import org.opencv.core.Mat;
 
 import java.util.Map;
@@ -17,8 +18,8 @@ public class StateServer {
     public Map<Integer,CamState> camStates;
 
     // State covariance matrix
-    Mat stateCov = new Mat(21,21,CV_64F);
-    Mat continuousNoiseCov = new Mat(12,12,CV_64F);
+    public RealMatrix stateCov; // TODO:  Mat(21,21,CV_64F);
+    public RealMatrix continuousNoiseCov; // TODO:  Mat(12,12,CV_64F);
 
 
 

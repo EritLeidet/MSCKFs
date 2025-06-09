@@ -26,6 +26,7 @@ import com.example.msckfswin.utils.Vecd;
 
 
 import org.apache.commons.math3.linear.Array2DRowRealMatrix;
+import org.apache.commons.math3.linear.ArrayRealVector;
 import org.apache.commons.math3.linear.MatrixUtils;
 import org.apache.commons.math3.linear.RealMatrix;
 import org.apache.commons.math3.linear.RealVector;
@@ -34,6 +35,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 public class Msckf {
 
@@ -142,99 +144,50 @@ public class Msckf {
         RealMatrix G = MatrixUtils.createRealMatrix(21,12);
 
         // F.block
-        F.setSubMatrix(skewSymmetric(gyro).scalarMultiply(-1), 0,0);
-
-        F.setSubMatrix(MatrixUtils..scalar,0,3);
-        submat = Matx33d.eye();
-        Core.multiply(submat, new Scalar(-1), submat);
-        submat.copyTo(F.submat(new Rect(3,0,3,3)));
-
-        F.setSubMatrix(quaternionToRotation((imuState.orientation)).transpose()..scalar,6,0);
-        submat = quaternionToRotation(imuState.orientation).t().matMul(skewSymmetric(acc));
-        Core.multiply(submat, new Scalar(-1), submat);
-        submat.copyTo(F.submat(new Rect(0,6,3,3)));
-
-        submat = quaternionToRotation(imuState.orientation).t();
-        Core.multiply(submat, new Scalar(-1), submat);
-        submat.copyTo(F.submat(new Rect(9,6,3,3)));
-
-        Matx33d.eye().copyTo(F.submat(new Rect(6,12,3,3)));
-
+        F.setSubMatrix(skewSymmetric(gyro).scalarMultiply(-1).getData(), 0,0);
+        F.setSubMatrix(MatrixUtils.createRealIdentityMatrix(3).scalarMultiply(-1).getData(),0,3);
+        F.setSubMatrix(quaternionToRotation(imuState.orientation).transpose().multiply(skewSymmetric(acc)).scalarMultiply(-1).getData(),6,0);
+        F.setSubMatrix(quaternionToRotation(imuState.orientation).transpose().scalarMultiply(-1).getData(),6,9);
+        F.setSubMatrix(MatrixUtils.createRealIdentityMatrix(3).getData(),12,6);
 
         // G.block
-        submat = Matx33d.eye();
-        Core.multiply(submat, new Scalar(-1), submat);
-        submat.copyTo(G.submat(new Rect(0,0,3,3)));
-
-        Matx33d.eye().copyTo(G.submat(new Rect(3,3,3,3)));
-
-        submat = quaternionToRotation(imuState.orientation).t();
-        Core.multiply(submat, new Scalar(-1), submat);
-        submat.copyTo(G.submat(new Rect(6,6,3,3)));
-
-        Matx33d.eye().copyTo(G.submat(new Rect(9,9,3,3)));
-
+        G.setSubMatrix(MatrixUtils.createRealIdentityMatrix(3).scalarMultiply(-1).getData(),0,0);
+        G.setSubMatrix(MatrixUtils.createRealIdentityMatrix(3).getData(),3,3);
+        G.setSubMatrix(quaternionToRotation(imuState.orientation).transpose().scalarMultiply(-1).getData(),6,6);
+        G.setSubMatrix(MatrixUtils.createRealIdentityMatrix(3).getData(),9,9);
 
         // Approximate matrix exponential to the 3rd order,
         // which can be considered to be accurate enough assuming
         // dtime is within 0.01s.
-        Mat Fdt = new Mat(21, 21, CV_64F);
-        Core.multiply(F, new Scalar(dtime), Fdt);
-
-        Mat FdtSquare = Fdt.matMul(Fdt);
-        Mat FdtCube = FdtSquare.matMul(Fdt);
-
-        Mat Phi = Mat.eye(21,21,CV_64F);
-        Core.add(Phi, Fdt, Phi);
-        Core.scaleAdd(FdtSquare, 0.5, Phi, Phi);
-        Core.scaleAdd(FdtCube, (1.0/6.0), Phi, Phi);
-
-        assert(FdtSquare.cols() == 21 && FdtSquare.rows() == 21);
-        assert(FdtCube.cols() == 21 && FdtCube.rows() == 21);
+        RealMatrix Fdt = F.scalarMultiply(dtime);
+        RealMatrix FdtSquare = Fdt.multiply(Fdt);
+        RealMatrix FdtCube = FdtSquare.multiply(Fdt);
+        RealMatrix Phi = MatrixUtils.createRealIdentityMatrix(21).add(Fdt).add(FdtSquare.scalarMultiply(0.5)).add(FdtCube.scalarMultiply(1.0/6.0)).
 
         // Propogate the state using 4th order Runge-Kutta
         predictNewState(dtime, gyro, acc);
 
         // Modify the transition matrix
-        Mat Rkk1 = quaternionToRotation(imuState.orientationNull);
-        submat = quaternionToRotation(imuState.orientation).matMul(Rkk1.t());
-        submat.copyTo(Phi.submat(new Rect(0,0,3,3)));
+        RealMatrix Rkk1 = quaternionToRotation(imuState.orientationNull);
+        Phi.setSubMatrix(quaternionToRotation(ImuState.or)0,0);
 
-        Mat u = Rkk1.matMul(ImuState.gravity);
-        assert(Vec3d.isVec3d(u));
-        Mat s = u.t().matMul(u).inv().matMul(u.t());
-        assert(s.rows() == 1 && s.cols() == 3);
+        RealVector u = Rkk1.operate(ImuState.gravity);
+        RealVector s = u.mapDivide( u.dotProduct(u));// Rowvector // TODO: be careful, it's a row vector?
 
-        Mat A1 = Phi.submat(new Rect(0,6,3,3));
+        RealMatrix A1 = Phi.getSubMatrix(6,8,0,2);
+        assert(A1.isSquare() && A1.getRowDimension() == 3);
+        RealVector w1 = skewSymmetric(imuState.velocityNull.subtract(imuState.velocity)).operate(ImuState.gravity);
+        Phi.setSubMatrix(A1.subtract(A1.operate(u).subtract(w1).outerProduct(s)).getData(),6,0);
 
-        Mat w1 = Vec3d.create();
-        Core.subtract(imuState.velocityNull, imuState.velocity, w1);
-        w1 = skewSymmetric(w1).matMul(ImuState.gravity);
-
-        // set submat to A1 - (A1*u-w1)*s
-        Core.multiply(A1,u,submat);
-        Core.subtract(submat,w1,submat);
-        Core.multiply(submat,s,submat);
-        Core.subtract(A1,submat,submat);
-        submat.copyTo(Phi.submat(new Rect(0,6, 3,3)));
-
-
-        Mat A2 = Phi.submat(new Rect(0,12,3,3));
-        Mat w2 = Vec3d.create();
-        Core.scaleAdd(imuState.velocityNull, dtime, imuState.positionNull,w2);
-        Core.subtract(w2, imuState.position, w2);
-        w2 = skewSymmetric(w2);
-        Core.multiply(w2, ImuState.gravity, w2);
-        assert(Vec3d.isVec3d(w2));
-
-        // set submat to  A2 - (A2*u-w2)*s
-        Core.multiply(A2,u,submat);
-        Core.subtract(submat,w2,submat);
-        Core.multiply(submat,s,submat);
-        Core.subtract(A2,submat,submat);
-        submat.copyTo(Phi.submat(new Rect(0,12, 3,3)));
+        RealMatrix A2 = Phi.getSubMatrix(12,14,0,2);
+        assert(A2.isSquare() && A2.getRowDimension() == 3);
+        RealVector w2 = skewSymmetric(imuState.velocityNull.mapMultiply(dtime).add(imuState.positionNull).subtract(imuState.position)).operate(ImuState.gravity);
+        Phi.setSubMatrix(A2.subtract(A2.operate(u).subtract(w2).outerProduct(s)).getData(),12,0);
 
         // Propogate the state covariance matrix.
+        RealMatrix Q = Phi.multiply(G).multiply(stateServer.continuousNoiseCov).multiply(G.transpose()).multiply(Phi.transpose()).scalarMultiply(dtime);
+
+
         Mat Q = Phi.matMul(G).matMul(stateServer.continuousNoiseCov).matMul(G.t()).matMul(Phi.t());
         Core.multiply(Q,new Scalar(dtime), Q);
         assert(Q.cols() == 21 && Q.rows() == 21);
@@ -544,7 +497,7 @@ public class Msckf {
 
     public void gatingTest() {}
 
-    public void featureJacobian(final Integer featureId, final List<Integer> camStateIds, Mat Hx, MatOfDouble r) {
+    public void featureJacobian(final Integer featureId, final List<Integer> camStateIds, RealMatrix Hx, RealVector r) {
         final Feature feature = mapServer.get(featureId);
 
         // Check how many camera states in the provided camera
@@ -556,11 +509,11 @@ public class Msckf {
             }
         }
 
-        int jacobianRowSize = 4 * validCamStateIds.size();
+        int jacobianRowSize = 2 * validCamStateIds.size(); // 4 * size()  in stereo
 
-        Mat Hxj = Mat.zeros(jacobianRowSize, 21+stateServer.camStates.size()*6, CV_64F);
-        Mat Hfj = Mat.zeros(jacobianRowSize, 3, CV_64F);
-        Mat rj = Mat.zeros(jacobianRowSize,1,CV_64F);
+        RealMatrix Hxj = MatrixUtils.createRealMatrix(jacobianRowSize, 15+stateServer.camStates.size()*6); // 21 + ... * 6 in stereo
+        RealMatrix Hfj = MatrixUtils.createRealMatrix(jacobianRowSize, 3);
+        RealVector rj = new ArrayRealVector(jacobianRowSize);
         int stackCntr = 0;
 
         for (final Integer camId : validCamStateIds) {
@@ -593,51 +546,52 @@ public class Msckf {
 
 
     }
-
-    public void measurementJacobian(final Integer camStateId, final Integer featureId, Mat Hx, Mat Hf, MatOfDouble r) {
+    public void measurementJacobian(final Integer camStateId, final Integer featureId, RealMatrix Hx, RealMatrix Hf, RealVector r) {
         // Prepare all the required data.
         final CamState camState = stateServer.camStates.get(camStateId);
         final Feature feature = mapServer.get(featureId);
 
         // Cam0 pose.
-        Mat Rwc0 = quaternionToRotation(camState.orientation);
-        final MatOfDouble tc0w = camState.position;
+        RealMatrix Rwc0 = quaternionToRotation(camState.orientation);
+        final RealVector tc0w = camState.position;
 
         // 3d feature position in the world frame.
         // And its observation with the stereo cameras.
-        final MatOfDouble pw = feature.position;
-        final MatOfDouble z = feature.observations.get(camStateId);
+        final RealVector pw = feature.position;
+        final RealVector z = feature.observations.get(camStateId);
 
         // Convert the feature position from the world frame to
         // the cam0 and cam1 frame.
-        Mat pc0 = Rwc0.matMul(sub(pw, tc0w));
+        RealVector pc0 = Rwc0.operate(pw.subtract(tc0w));
 
-        // Compute the Jacobians. // TODO
-        Mat dzDpc0 = Mat.zeros(4,3,CV_64F);
-        Matx.setD(dzDpc0, 0,0, 1 / Vecd.get(pc0, 2));
-        Matx.setD(dzDpc0, 1,1, 1 / Vecd.get(pc0, 2));
-        Matx.setD(dzDpc0, 0,2, - Vecd.get(pc0, 0) / (Vecd.get(pc0,2) * Vecd.get(pc0,2)));
-        Matx.setD(dzDpc0, 1,2, - Vecd.get(pc0, 1) / (Vecd.get(pc0,2) * Vecd.get(pc0,2)));
+        // Compute the Jacobians.
+        double X = pc0.getEntry(0);
+        double Y = pc0.getEntry(1);
+        double Z = pc0.getEntry(2);
 
-        Mat dpc0Dxc = Mat.zeros(3,6, CV_64F);
-        dpc0Dxc.leftCols =; // TODO
-        dpc0Dxc.rightCols =; // TODO
+        RealMatrix Ji = MatrixUtils.createRealMatrix(2,3);
+        Ji.setRow(0, new double[]{1,0,-X / Z});
+        Ji.setRow(1, new double[]{0,1,-Y / Z});
+        Ji = Ji.scalarMultiply(1.0d/Z);
 
-        Mat dpc0Dpg = Rwc0;
+        // Enforce observability constraint
+        RealMatrix A = MatrixUtils.createRealMatrix(2,6);
+        A.setSubMatrix(Ji.multiply(skewSymmetric(pc0)).getData(), 0,0); // TODO
+        A.setSubMatrix(Ji.scalarMultiply(-1).multiply(quaternionToRotation(camState.)),0,3); // TODO: camState.Orientation or OrientationNull?
+        RealVector u = new ArrayRealVector(6);
 
+        u.setSubVector(0, quaternionToRotation(camState.orientationNull).operate(ImuState.gravity)); // TODO: is orientNULL correct?
+        u.setSubVector(3, skewSymmetric(pw.subtract(camState.positionNull)).operate(ImuState.gravity)); // TODO: is posNULL correct?
 
-        Hx = add(dzDpc0.matMul(dpc0Dxc), dz);
-        // TODO: HILFE!? Stereo->Mono
-        // TODO: ...
-        // TODO: override input params Hx, Hf - like in Python
+        Hx.setSubMatrix(A.subtract(A.operate(u).mapDivide(u.dotProduct(u)).outerProduct(u)).getData(), 0,0);
+        assert(Hx.getRowDimension() == 2 && Hx.getColumnDimension() == 6);
+        Hf.setSubMatrix(Hx.getSubMatrix(0,1,3,5).scalarMultiply(-1).getData(),0,0);
+        assert(Hf.getRowDimension() == 2 && Hf.getColumnDimension() == 3);
 
-        // Modifty the measurement Jacobian to ensure
-        // observability constrain.
-        // TODO: ...
+        // TODO: Why in C++ does H_f get calculated and then COMPLETELY overridden?
 
         // Compute the residual.
-        sub(z, Vec2d.create(Vecd.get(pc0,0) / Vecd.get(pc0,2), Vecd.get(pc0, 1) / Vecd.get(pc0, 2))).copyTo(r); //TODO: Override r? (input param)
-        // TODO: residual should be Vec2d (bc. mono) instead of Vec4d
+        r.setSubVector(0, MatrixUtils.createRealVector(new double[]{X/Z, Y/Z}));
     }
     // TODO: are there any other methods where you are supposed to edit the input params, but I accidentally just reassigned the param?
 

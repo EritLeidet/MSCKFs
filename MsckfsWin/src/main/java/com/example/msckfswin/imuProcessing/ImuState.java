@@ -5,6 +5,7 @@ import com.example.msckfswin.utils.Vec3d;
 import com.example.msckfswin.utils.Vec4d;
 
 import org.apache.commons.math3.linear.RealVector;
+import org.apache.commons.numbers.quaternion.Quaternion;
 import org.opencv.core.Mat;
 import org.opencv.core.MatOfDouble;
 
@@ -27,7 +28,7 @@ public class ImuState {
 
 
 
-    public RealVector orientationNull = Vec4d.create(0,0,0,1);
+    public Quaternion orientationNull = Vec4d.create(0,0,0,1);
     public RealVector positionNull = Vec3d.create();
     public RealVector velocityNull = Vec3d.create();
 

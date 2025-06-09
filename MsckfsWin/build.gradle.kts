@@ -9,5 +9,8 @@ dependencies {
     implementation(files("libs\\opencv-4110.jar"))
 
     // https://mvnrepository.com/artifact/org.apache.commons/commons-lang3
-    implementation("org.apache.commons:commons-lang3:3.0")
+    implementation(libs.commons.lang3)
+    implementation(libs.commons.math3)
+    implementation(libs.commons.geometry.euclidean)
+
 }
