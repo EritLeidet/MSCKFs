@@ -17,9 +17,11 @@ public class StateServer {
 
     public Map<Integer,CamState> camStates;
 
+    // TODO: maybe private, create setters with size correctness test?
     // State covariance matrix
-    public RealMatrix stateCov; // TODO:  Mat(21,21,CV_64F);
-    public RealMatrix continuousNoiseCov; // TODO:  Mat(12,12,CV_64F);
+    // TODO: What size should the cov matrices be in mono compared to stereo? e.g. 15 instead of 21? -> Yes, mono uses 15 for stateCov in imuState. What about continuousNoiseCov?
+    public RealMatrix stateCov; // TODO: should be (15,15) instead of (21,21). Unless currentrly augmented.
+    public RealMatrix continuousNoiseCov; // TODO: What size should this be?  Mat(12,12,CV_64F);
 
 
 

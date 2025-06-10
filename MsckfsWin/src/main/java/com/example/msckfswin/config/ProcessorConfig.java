@@ -3,9 +3,7 @@ package com.example.msckfswin.config;
 import org.opencv.core.MatOfDouble;
 import org.opencv.core.MatOfInt;
 
-/**
- * Taken from Python Impl//TODO: how 2 give credit
- */
+// TODO: maybe change name to VioConfig?
 public class ProcessorConfig {
 
     // TODO: how to config for Android?
@@ -33,6 +31,8 @@ public class ProcessorConfig {
     public String cam0DistortionModel;
     public MatOfDouble cam0DistortionCoeffs; // vec4
 
+    // Noise related parameters (Use variance instead of standard deviation)
+    public final double observationNoise = 0.01; // 0.035^2 in Python
     private ProcessorConfig() {
     }
 

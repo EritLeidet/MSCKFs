@@ -2,29 +2,61 @@ package com.example.msckfswin.utils;
 
 
 import org.apache.commons.geometry.euclidean.threed.rotation.QuaternionRotation;
+import org.apache.commons.math3.linear.ArrayRealVector;
 import org.apache.commons.math3.linear.MatrixUtils;
 import org.apache.commons.math3.linear.RealLinearOperator;
 import org.apache.commons.math3.linear.RealMatrix;
 import org.apache.commons.math3.linear.RealVector;
 import org.apache.commons.numbers.quaternion.Quaternion;
-import org.opencv.core.Mat;
-import org.opencv.core.MatOfDouble;
 
+
+// Convention used in vector representation: [x, y, z, w(scalar)]^T
+// Convention used by Quaternion class: [w(scalar),x,y,z]
 public class MathUtils {
 
-    // TODO: copy unit tests
+    // own work.
+    public static RealVector quaternionToVector(Quaternion q) {
+        return new ArrayRealVector(new double[]{q.getX(), q.getY(), q.getZ(), q.getScalarPart()});
+    }
 
-    // TODO: implementations
+    // own work.
+    public static Quaternion vectorToQuaternion(RealVector v) {
+        assert(v.getDimension() == 4);
+        return Quaternion.of(v.getEntry(3), v.getEntry(0), v.getEntry(1), v.getEntry(2));
+    }
+
+    // own work
+    public static void insertColumnVector(RealMatrix m, RealVector v, int row, int col) {
+        RealVector colVector = m.getColumnVector(col);
+        colVector.setSubVector(row,v);
+        m.setColumnVector(col, colVector);
+    }
+
+    // own work
+    public static void insertRowVector(RealMatrix m, RealVector v, int row, int col) {
+        RealVector rowVector = m.getRowVector(row);
+        rowVector.setSubVector(col,v);
+        m.setColumnVector(row, rowVector);
+    }
+
+
+    // TODO: copy unit tests
 
     public static RealMatrix skewSymmetric(RealVector mat) {
         return null; //TODO
     }
 
+
+    /*
+    public static RealMatrix quaternionToRotation(RealVector q) {
+        return null; // TODO
+    }
+
+     */
     public static RealMatrix quaternionToRotation(Quaternion q) {
         // TODO: different quaternion convention C++ / Java
         final RealVector qVec = MatrixUtils.createRealVector(new double[]{q.getX(), q.getY(), q.getZ(), q.getScalarPart()});
         final double q4 = q.getScalarPart();
-        RealLinearOperator operator = new;
         // TODO: operate instead of preMultiply?
         return MatrixUtils.createRealIdentityMatrix(3).scalarMultiply(2*q4*q4-1).subtract(skewSymmetric(qVec).scalarMultiply(2*q4)).add(transpose(qVec).preMultiply(qVec.mapMultiply(2))); // TODO: instead of custom tranpose, convert to
     }
@@ -34,9 +66,9 @@ public class MathUtils {
         return MatrixUtils.createRealMatrix(new double[][]{vec.toArray()}).transpose();
     }
 
-    public static void quaternionNormalize(Mat mat) {}  // TODO
+    public static void quaternionNormalize(Quaternion mat) {}  // TODO
 
-    public static Quaternion rotationToQuaternion(Mat mat) {return null;} // TODO
+    public static Quaternion rotationToQuaternion(RealMatrix mat) {return null;} // TODO
 
     /*
      *  @brief Create a skew-symmetric matrix from a 3-element vector.

@@ -8,8 +8,14 @@ import static com.example.msckfswin.utils.MatOperations.sub;
 import static com.example.msckfswin.utils.MathUtils.*;
 import static com.example.msckfswin.utils.Matx.setD;
 
+import static org.apache.commons.math3.linear.MatrixUtils.createRealIdentityMatrix;
+import static org.apache.commons.math3.linear.MatrixUtils.createRealMatrix;
 import static org.opencv.core.CvType.CV_64F;
 
+import static java.lang.Math.cos;
+import static java.lang.Math.sin;
+
+import com.example.msckfswin.config.ProcessorConfig;
 import com.example.msckfswin.imageProcessing.Feature;
 import com.example.msckfswin.imageProcessing.FeatureMeasurement;
 import com.example.msckfswin.imageProcessing.FeatureMessage;
@@ -25,11 +31,17 @@ import com.example.msckfswin.utils.Vec4d;
 import com.example.msckfswin.utils.Vecd;
 
 
+import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.math3.linear.Array2DRowRealMatrix;
 import org.apache.commons.math3.linear.ArrayRealVector;
+import org.apache.commons.math3.linear.CholeskyDecomposition;
+import org.apache.commons.math3.linear.DecompositionSolver;
 import org.apache.commons.math3.linear.MatrixUtils;
+import org.apache.commons.math3.linear.QRDecomposition;
 import org.apache.commons.math3.linear.RealMatrix;
 import org.apache.commons.math3.linear.RealVector;
+import org.apache.commons.math3.linear.SingularValueDecomposition;
+import org.apache.commons.numbers.quaternion.Quaternion;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -42,6 +54,8 @@ public class Msckf {
     // State vector
     private StateServer stateServer;
 
+    private ProcessorConfig config;
+
     // Features used
     private Map<Integer, Feature> mapServer;
 
@@ -50,7 +64,8 @@ public class Msckf {
     // transfer delay between IMU and Image messages.
     private final List<ImuMessage> imuMsgBuffer = Collections.synchronizedList(new ArrayList<>()); // TODO: should be same as in ImageProcessor
 
-
+    // Tracking rate.
+    private double trackingRate;
 
     // TODO: in Konstruktor or nah?
     private boolean isGravitySet = false;
@@ -140,21 +155,21 @@ public class Msckf {
         double dtime = timestamp - imuState.timestamp; // TODO: maybe save as a new Scalar?
 
         // Compute discrete transition and noise covariance matrix
-        RealMatrix F = MatrixUtils.createRealMatrix(21,21);
-        RealMatrix G = MatrixUtils.createRealMatrix(21,12);
+        RealMatrix F = createRealMatrix(21,21); // TODO: are these correct sizes for mono?
+        RealMatrix G = createRealMatrix(21,12);
 
         // F.block
         F.setSubMatrix(skewSymmetric(gyro).scalarMultiply(-1).getData(), 0,0);
-        F.setSubMatrix(MatrixUtils.createRealIdentityMatrix(3).scalarMultiply(-1).getData(),0,3);
+        F.setSubMatrix(createRealIdentityMatrix(3).scalarMultiply(-1).getData(),0,3);
         F.setSubMatrix(quaternionToRotation(imuState.orientation).transpose().multiply(skewSymmetric(acc)).scalarMultiply(-1).getData(),6,0);
         F.setSubMatrix(quaternionToRotation(imuState.orientation).transpose().scalarMultiply(-1).getData(),6,9);
-        F.setSubMatrix(MatrixUtils.createRealIdentityMatrix(3).getData(),12,6);
+        F.setSubMatrix(createRealIdentityMatrix(3).getData(),12,6);
 
         // G.block
-        G.setSubMatrix(MatrixUtils.createRealIdentityMatrix(3).scalarMultiply(-1).getData(),0,0);
-        G.setSubMatrix(MatrixUtils.createRealIdentityMatrix(3).getData(),3,3);
+        G.setSubMatrix(createRealIdentityMatrix(3).scalarMultiply(-1).getData(),0,0);
+        G.setSubMatrix(createRealIdentityMatrix(3).getData(),3,3);
         G.setSubMatrix(quaternionToRotation(imuState.orientation).transpose().scalarMultiply(-1).getData(),6,6);
-        G.setSubMatrix(MatrixUtils.createRealIdentityMatrix(3).getData(),9,9);
+        G.setSubMatrix(createRealIdentityMatrix(3).getData(),9,9);
 
         // Approximate matrix exponential to the 3rd order,
         // which can be considered to be accurate enough assuming
@@ -162,7 +177,8 @@ public class Msckf {
         RealMatrix Fdt = F.scalarMultiply(dtime);
         RealMatrix FdtSquare = Fdt.multiply(Fdt);
         RealMatrix FdtCube = FdtSquare.multiply(Fdt);
-        RealMatrix Phi = MatrixUtils.createRealIdentityMatrix(21).add(Fdt).add(FdtSquare.scalarMultiply(0.5)).add(FdtCube.scalarMultiply(1.0/6.0)).
+        // TODO: danger! 21 -> mono?
+        RealMatrix Phi = createRealIdentityMatrix(21).add(Fdt).add(FdtSquare.scalarMultiply(0.5)).add(FdtCube.scalarMultiply(1.0/6.0)).
 
         // Propogate the state using 4th order Runge-Kutta
         predictNewState(dtime, gyro, acc);
@@ -186,24 +202,18 @@ public class Msckf {
 
         // Propogate the state covariance matrix.
         RealMatrix Q = Phi.multiply(G).multiply(stateServer.continuousNoiseCov).multiply(G.transpose()).multiply(Phi.transpose()).scalarMultiply(dtime);
-
-
-        Mat Q = Phi.matMul(G).matMul(stateServer.continuousNoiseCov).matMul(G.t()).matMul(Phi.t());
-        Core.multiply(Q,new Scalar(dtime), Q);
-        assert(Q.cols() == 21 && Q.rows() == 21);
-        // TODO: submat without rect?
-        submat = Phi.matMul(stateServer.stateCov.submat(new Rect(0,0,21,21))).matMul(Phi.t());
-        Core.add(submat, Q, submat);
-        submat.copyTo(stateServer.stateCov.submat(new Rect(0,0,21,21)));
+        assert(Q.isSquare() && Q.getRowDimension() == 21);
+        stateServer.stateCov.setSubMatrix(Phi.multiply(stateServer.stateCov).getSubMatrix(0,20,0,20).multiply(Phi.transpose()).add(Q).getData(),0,0);
 
         if (!stateServer.camStates.isEmpty()) {
-            // TODO: why does the block work differently now? Look how in Python
-            // TODO: ...
+            // TODO: danger! 21 -> mono?
+            RealMatrix colsSubmat = stateServer.stateCov.getSubMatrix(0,20,21,); // TODO: 20 correct?
+            RealMatrix rowsSubmat = stateServer.stateCov.getSubMatrix(21,,0,);
+            stateServer.stateCov.setSubMatrix(Phi.multiply(colsSubmat).getData(),,);
+            stateServer.stateCov.setSubMatrix(rowsSubmat.multiply(Phi.transpose()).getData(),,);
         }
 
-        Mat stateCovFixed = new Mat();
-        Core.add(stateServer.stateCov, stateServer.stateCov.t(), stateCovFixed);
-        Core.divide(stateCovFixed, new Scalar(2.0), stateCovFixed);
+        RealMatrix stateCovFixed = (stateServer.stateCov.add(stateServer.stateCov.transpose())).scalarMultiply(0.5);
         stateServer.stateCov = stateCovFixed;
 
         // Update the state correspondes to null space.
@@ -214,128 +224,105 @@ public class Msckf {
         // Update the state info
         stateServer.imuState.timestamp = timestamp;
 
-
-
-
     }
 
-    public void predictNewState(final double dt, final Mat gyro, final Mat acc) {
-        assert(Vec3d.isVec3d(gyro));
-        assert(Vec3d.isVec3d(acc));
-        Mat tempMat;
+    public void predictNewState(final double dt, final RealVector gyro, final RealVector acc) {
 
-        double gyroNorm = gyro.norm(); //TODO
-        Mat Omega = Mat.eye(4,4, CV_64F);
-        tempMat = skewSymmetric(gyro);
-        Core.multiply(tempMat, new Scalar(-1), tempMat);
-        tempMat.copyTo(Omega.submat(new Rect(0,0,3,3)));
-        gyro.copyTo(Omega.submat(new Rect(3,0,T,T))); // TODO
-        Core.multiply(gyro, new Scalar(-1),tempMat);
-        tempMat.copyTo(Omega.submat(new Rect(0,3,T,T)));
+        double gyroNorm = gyro.getNorm();
 
-        Mat q = stateServer.imuState.orientation;
-        Mat v = stateServer.imuState.velocity;
-        Mat p = stateServer.imuState.position;
+        RealMatrix Omega = createRealMatrix(4,4);
+        Omega.setSubMatrix(skewSymmetric(gyro).scalarMultiply(-1).getData(),0,0);
+        insertColumnVector(Omega,gyro,0,3);
+        insertRowVector(Omega, gyro.mapMultiply(-1),3,0);
+
+        Quaternion q = stateServer.imuState.orientation;
+        RealVector v = stateServer.imuState.velocity;
+        RealVector p = stateServer.imuState.position;
 
         // Some pre-calculation
-        Mat dqDt, dqDt2;
+        Quaternion dqDt, dqDt2;
         if (gyroNorm > 1e-5) {
-            dqDt = new Mat();
-            Core.multiply(Mat.eye(4,4,CV_64F), new Scalar(Math.cos(gyroNorm*dt*0.5)), dqDt);
-            Core.multiply(Omega, new Scalar(1 / gyroNorm * Math.sin(gyroNorm*dt*0.5)), tempMat);
-            Core.add(dqDt, tempMat, dqDt);
-            dqDt = dqDt.matMul(q);
+            RealVector qVec = quaternionToVector(q);
+            dqDt = vectorToQuaternion(
+                    (createRealIdentityMatrix(4).scalarMultiply(cos(gyroNorm*dt*0.5))
+                            .add(Omega.scalarMultiply(1/gyroNorm*sin(gyroNorm*dt*0.5))) // addition before multiplication
+                            .operate(qVec)
+                    )
+            );
 
-            dqDt2 = new Mat();
-            Core.multiply(Mat.eye(4,4,CV_64F), new Scalar(Math.cos(gyroNorm*dt*0.25)), dqDt2);
-            Core.multiply(Omega, new Scalar(1 / gyroNorm * Math.sin(gyroNorm*dt*0.25)), tempMat);
-            Core.add(dqDt2, tempMat, dqDt2);
-            dqDt2 = dqDt2.matMul(q);
+            dqDt2 = vectorToQuaternion(
+                    (createRealIdentityMatrix(4).scalarMultiply(cos(gyroNorm*dt*0.25))
+                            .add(Omega.scalarMultiply(1/gyroNorm*sin(gyroNorm*dt*0.25)))
+                            .operate(qVec)
+                    )
+            );
 
 
         } else {
-            dqDt = new Mat();
-            Core.multiply(Omega, new Scalar(0.5*dt), dqDt);
-            Core.add(Mat.eye(4,4, CV_64F), dqDt, dqDt);
-            Core.multiply(dqDt, new Scalar(gyroNorm*dt*0.5), dqDt);
-            dqDt = dqDt.matMul(q);
+            RealVector qVec = quaternionToVector(q);
+            dqDt = vectorToQuaternion(
+                    createRealIdentityMatrix(4).add(Omega.scalarMultiply(0.5*dt))
+                            .scalarMultiply(cos(gyroNorm*dt*0.5))
+                            .operate(qVec)
+            );
 
-            dqDt2 = new Mat();
-            Core.multiply(Omega, new Scalar(0.25*dt), dqDt2);
-            Core.add(Mat.eye(4,4, CV_64F), dqDt2, dqDt2);
-            Core.multiply(dqDt2, new Scalar(gyroNorm*dt*0.25), dqDt2);
-            dqDt2 = dqDt2.matMul(q);
+            dqDt2 = vectorToQuaternion(
+                    createRealIdentityMatrix(4).add(Omega.scalarMultiply(0.25*dt))
+                            .scalarMultiply(cos(gyroNorm*dt*0.25))
+                            .operate(qVec)
+            );
         }
 
-        assert(Vec4d.isVec4d(dqDt));
-        assert(Vec4d.isVec4d(dqDt2));
 
-        Mat dRDtTranspose = quaternionToRotation(dqDt).t();
-        Mat dRDt2Transpose = quaternionToRotation(dqDt2).t();
+        RealMatrix dRDtTranspose = quaternionToRotation(dqDt).transpose();
+        RealMatrix dRDt2Transpose = quaternionToRotation(dqDt2).transpose();
 
         // k1 = f(tn, yn)
-        Mat k1vDot = quaternionToRotation(q).t().matMul(acc);
-        Core.add(k1vDot,ImuState.gravity,k1vDot);
-        Mat k1pDot = v;
+        RealVector k1vDot = quaternionToRotation(q).transpose().operate(acc).add(ImuState.gravity);
+        RealVector k1pDot = v; // TODO: create as copy or reference?
 
         // k2 = f(tn+dt/2, yn+k1*dt/2)
-        Mat k1v = new Mat();
-        Core.multiply(k1vDot, new Scalar(dt), k1v);
-        Core.divide(k1v, new Scalar(2), k1v); // TODO: error
-        Core.add(v,k1v,k1v);
-
-        Mat k2vDot = dRDt2Transpose.matMul(acc);
-        k2vDot = k2vDot.matMul(ImuState.gravity);
-
-        Mat k2pDot = k1v;
+        RealVector k1v = v.add(k1vDot.mapMultiply(dt/2));
+        RealVector k2vDot = dRDt2Transpose.operate(acc).add(ImuState.gravity);
+        RealVector k2pDot = k1v;
 
         // k3 = f(tn+dt/2, yn+k2*dt/2)
-        Mat k2v = new Mat();
-        Core.multiply(k2vDot, new Scalar(dt), k2v);
-        Core.divide(k2v, new Scalar(2), k2v);
-        Core.add(v,k2v,k2v);
-
-        Mat k3vDot = dRDt2Transpose.matMul(acc);
-        Core.add(k3vDot, ImuState.gravity, k3vDot);
-
-        Mat k3pDot = k2v;
+        RealVector k2v = v.add(k2vDot).mapMultiply(dt/2);
+        RealVector k3vDot = dRDt2Transpose.operate(acc).add(ImuState.gravity);
+        RealVector k3pDot = k2v;
 
         // k4 = f(tn+dt, yn+k3*dt)
-        Mat k3v = new Mat();
-        Core.multiply(k3vDot, new Scalar(dt), k3v);
-        Core.add(k3v, v, k3v);
+        RealVector k3v = v.add(k3vDot.mapMultiply(dt));
+        RealVector k4vDot = dRDtTranspose.operate(acc).add(ImuState.gravity);
+        RealVector k4pDot = k3v;
 
-        Mat k4vDot = dRDtTranspose.matMul(acc);
-        Core.add(k4vDot, ImuState.gravity, k4vDot);
+        // yn+1 = yn + dt/6*(k1+2*k2+2*k3+k4)#
+        q = dqDt.normalize();
 
-        Mat k4pDot = k3v;
+        // update the imu state
+        v = v.add(k1vDot.add(k2vDot.mapMultiply(2)).add(k3vDot.mapMultiply(2)).add(k4vDot).mapMultiply(dt/6));
+        p = p.add(k1pDot.add(k2pDot.mapMultiply(2)).add(k3pDot.mapMultiply(2)).add(k4pDot).mapMultiply(dt/6));
 
-        // yn+1 = yn + dt/6*(k1+2*k2+2*k3+k4)
-        q = dqDt;
-        quaternionNormalize(q);
-
-        add(v, mult(dt/6, add(k1vDot, mult(2, k2vDot), mult(2, k3vDot), k4vDot)));
-        add(p, mult(dt/6, add(k1pDot, mult(2, k2pDot), mult(2, k3pDot), k4pDot)));
-
+        stateServer.imuState.orientation = q;
+        stateServer.imuState.position = v;
+        stateServer.imuState.velocity = p;
 
     }
 
     public void stateAugmentation(final long timestamp) { // TODO: OG datatype is double, but timestamps are long in java. Which better?
-        final Mat Ric = stateServer.imuState.rImuCam0;
-        final MatOfDouble tci = stateServer.imuState.tCam0Imu;
+        final RealMatrix Ric = stateServer.imuState.rImuCam0;
+        final RealVector tci = stateServer.imuState.tCam0Imu;
 
         // Add a new camera state to the state server.
-        Mat Rwi = quaternionToRotation(stateServer.imuState.orientation);
-        Mat Rwc = Ric.matMul(Rwi);
-        Mat tcw = add(stateServer.imuState.position, Rwi.t().matMul(tci));
-
+        RealMatrix Rwi = quaternionToRotation(stateServer.imuState.orientation);
+        RealMatrix Rwc = Ric.multiply(Rwi);
+        RealVector tcw = stateServer.imuState.position.add(Rwi.transpose().operate(tci));
         CamState camState = new CamState(stateServer.imuState.id);
         stateServer.camStates.put(stateServer.imuState.id, camState);
 
         camState.timestamp = timestamp;
         camState.orientation = rotationToQuaternion(Rwc);
-        camState.position = new MatOfDouble(tcw);
-        assert(Vec3d.isVec3d(tcw));
+        camState.position = tcw;
 
         camState.orientationNull = camState.orientation;
         camState.positionNull = camState.position;
@@ -345,28 +332,30 @@ public class Msckf {
         // in Equation (16) in "A Multi-State Constraint Kalman Filter for Vision
         // -aided Inertial Navigation".
 
-        Mat J = new Mat(6,21,CV_64F);
-        Ric.copyTo(J.submat(new Rect(0,0,3,3)));
-        Matx33d.eye().copyTo(J.submat(new Rect(15,0, 3,3)));
-        skewSymmetric(Rwi.t().matMul(tci)).copyTo(J.submat(new Rect(0,3,3,3)));
-        Matx33d.eye().copyTo(J.submat(new Rect(12,3,3,3)));
-        Rwi.t().copyTo(J.submat(new Rect(18,3,3,3)));
+        RealMatrix J = createRealMatrix(6,21); // TODO: are these dimensions correct? Or should it be e.g. 15 instead of 21?
+        J.setSubMatrix(Ric.getData(), 0,0);
+        J.setSubMatrix(createRealIdentityMatrix(3).getData(),0,15);
+        J.setSubMatrix(skewSymmetric(Rwi.transpose().operate(tci)).getData(),3,0);
+
+        J.setSubMatrix(createRealIdentityMatrix(3).getData(),3,12);
+        J.setSubMatrix(Rwi.transpose().getData(),3,18);
 
         // Resize the state covariance matrix.
-        int oldRows = stateServer.stateCov.rows();
-        int oldCols = stateServer.stateCov.cols();
-        stateServer.stateCov.conservativeResize // TODO
+        int oldRows = stateServer.stateCov.getRowDimension();
+        RealMatrix stateCov = createRealMatrix(oldRows+6,oldRows+6); // TODO: should it really be +6, and not +3 or anything? What does the 6 stand for?
+        stateServer.stateCov = ; // TODO: put at the end, like in Python
 
-        // Rename some matrix blocks for convenience.
-        final Mat P11 = stateServer.stateCov.submat(new Rect(0,0,21,21));
-        final Mat P12 = stateServer.stateCov.submat(new Rect()) // TODO: rect size?
+        // TODO: this is so weird. Python resizes stateCov, only then tries to get a copy of the original stateCov?
+        RealMatrix P11 = stateServer.stateCov.getSubMatrix(0,oldRows-1,0,oldRows-1); // TODO: :21 like in Python or 15? Originally hard coded.
 
         // Fill in the augmented state covariance.
-        // TODO: translate the code until next comment
+        RealMatrix r1 = J.multiply(P11); // Shape (6,15)
+        stateCov.setSubMatrix(r1.getData(),oldRows,0); // TODO: oldRows or oldRows-1? Bc. Python uses old_rows
+        stateCov.setSubMatrix(r1.transpose().getData(),oldRows,0); // TODO: why in Python not use r1?
+        stateCov.setSubMatrix(J.multiply(P11).multiply(J.transpose()).getData(),oldRows,oldRows);
 
         // Fix the covariance to be symmetric
-        Mat stateCovFixed = div(add(stateServer.stateCov, stateServer.stateCov.t()),2.0);
-        stateServer.stateCov = stateCovFixed;
+        stateServer.stateCov = stateCov.add(stateCov.transpose()).scalarMultiply(0.5);
 
 
     }
@@ -392,9 +381,7 @@ public class Msckf {
             }
         }
 
-
-        // TODO: ...
-
+        trackingRate = trackedFeaturesNum / (double) currFeatureNum;
 
 
     }
@@ -442,8 +429,8 @@ public class Msckf {
         // Return if there is no lost feature to be processed.
         if (processedFeatureIds.isEmpty()) return;
 
-        Mat Hx = Mat.zeros(jacobianRowSize, 21 + 6 * stateServer.camStates.size(), CV_64F); // TODO: is .zeroes the Java equivalent to c++ .Zero?
-        Mat r = Mat.zeros(jacobianRowSize, 1, CV_64F);
+        RealMatrix Hx = createRealMatrix(jacobianRowSize, 15+6*stateServer.camStates.size()); // 21 + 6 * size() in stereo
+        RealVector r = new ArrayRealVector(jacobianRowSize);
         int stackCntr = 0;
 
         // Process the features which lose track.
@@ -452,9 +439,10 @@ public class Msckf {
 
             List<Integer> camStateIds = new ArrayList<>(feature.observations.keySet());
 
-            Mat Hxj = new Mat();
-            Mat rj = new MatOfDouble();
-            featureJacobian(feature.id, camStateIds, Hxj, rj);
+
+            ImmutablePair<RealMatrix,RealVector> HxjRj = featureJacobian(feature.id, camStateIds);
+            RealMatrix Hxj = HxjRj.left; // TODO: maybe call Tuple instead of resundant vars?
+            RealVector rj = HxjRj.right;
 
             if (gatingTest(Hxj, rj, camStateIds.size()-1)) {
                 Hxj.copyTo(Hx.submat()); // TODO: understand Block method
@@ -495,9 +483,15 @@ public class Msckf {
         }
     }
 
-    public void gatingTest() {}
+    public void gatingTest(final RealMatrix H, final RealVector r, final int dof) {
+        RealMatrix P1 = H.multiply(stateServer.stateCov).multiply(H.transpose());
+        assert(P1.isSquare());
+        RealMatrix P2 = createRealIdentityMatrix(H.getRowDimension()).scalarMultiply(config.observationNoise);
+        double gamma = new DecompositionSolver().g; // TODO: r.transpose()
+        // TODO
+    }
 
-    public void featureJacobian(final Integer featureId, final List<Integer> camStateIds, RealMatrix Hx, RealVector r) {
+    public ImmutablePair<RealMatrix, RealVector> featureJacobian(final Integer featureId, final List<Integer> camStateIds) {
         final Feature feature = mapServer.get(featureId);
 
         // Check how many camera states in the provided camera
@@ -511,41 +505,36 @@ public class Msckf {
 
         int jacobianRowSize = 2 * validCamStateIds.size(); // 4 * size()  in stereo
 
-        RealMatrix Hxj = MatrixUtils.createRealMatrix(jacobianRowSize, 15+stateServer.camStates.size()*6); // 21 + ... * 6 in stereo
-        RealMatrix Hfj = MatrixUtils.createRealMatrix(jacobianRowSize, 3);
+        RealMatrix Hxj = createRealMatrix(jacobianRowSize, 15+stateServer.camStates.size()*6); // 21 + size() * 6 in stereo
+        RealMatrix Hfj = createRealMatrix(jacobianRowSize, 3);
         RealVector rj = new ArrayRealVector(jacobianRowSize);
         int stackCntr = 0;
 
         for (final Integer camId : validCamStateIds) {
-            Mat Hxi = Mat.zeros(4,6,CV_64F);
-            Mat Hfi = Mat.zeros(4,3,CV_64F);
-            MatOfDouble ri = Vec2d.create(); // vec2 instead of vec4, bc. mono
+            RealMatrix Hxi = createRealMatrix(2,6); // (4,6) in stereo
+            RealMatrix Hfi = createRealMatrix(2,3); // (4,3) in stereo
+            RealVector ri = new ArrayRealVector(2); // size 4 in stereo
             measurementJacobian(camId, feature.id, Hxi, Hfi, ri);
 
-            // TODO: cameStateIter
-            int camStateCntr; // TODO: initialize
+            int camStateCntr = new ArrayList<>(stateServer.camStates.keySet()).indexOf(camId); // TODO: do the keys() have to be sorted, for .indexOf() to be consistent
 
-            // Stack the Jacobians.
-            // TODO: Is overriding Hxi, Hfi (input parameters) correct?
-            Hxi.copyTo(Hxj.submat(new Rect(21+6*camStateCntr,stackCntr,6,4)));
-            Hfi.copyTo(Hfj.submat(new Rect(0,stackCntr,3,4)));
-            rj.segment(); // TODO
-            stackCntr += 4;
+            // Stack the Jacobians. // TODO: why are the indices so different in Python impl? Why starts at +4 there?
+            Hxj.setSubMatrix(Hxi.getData(), stackCntr ,15+6*camStateCntr); // column 21+6*camStateCntr in stereo
+            Hfj.setSubMatrix(Hfi.getData(),stackCntr,0);
+            rj.setSubVector(stackCntr,ri);
+            stackCntr += 2; // += 4 in stereo
         }
 
         // Project the residual and Jacobians onto the nullspace
-        // of H_fj. // TODO
-        Mat _w = new Mat();
-        Mat u = new Mat();
-        Mat _vt = new Mat();
-        Core.SVDecomp(Hfj, _w, u, _vt); // TODO: is the u output actually equivalent to the Python u? // TODO: which flags?
-        Mat A = u.submat(); // TODO
+        // of H_fj.
+        RealMatrix U = new SingularValueDecomposition(Hfj).getU();
+        RealMatrix A = U.getSubMatrix(0,U.getRowDimension()-1,3,U.getColumnDimension()-1);
 
-        A.t().matMul(Hxj).copyTo(Hx);
-        A.t().matMul(rj).copyTo(r);
-
-
+        Hx = A.transpose().multiply(Hxj);
+        r = A.transpose().operate(rj);
+        return new ImmutablePair<>(Hx,r);
     }
+
     public void measurementJacobian(final Integer camStateId, final Integer featureId, RealMatrix Hx, RealMatrix Hf, RealVector r) {
         // Prepare all the required data.
         final CamState camState = stateServer.camStates.get(camStateId);
@@ -569,15 +558,15 @@ public class Msckf {
         double Y = pc0.getEntry(1);
         double Z = pc0.getEntry(2);
 
-        RealMatrix Ji = MatrixUtils.createRealMatrix(2,3);
+        RealMatrix Ji = createRealMatrix(2,3);
         Ji.setRow(0, new double[]{1,0,-X / Z});
         Ji.setRow(1, new double[]{0,1,-Y / Z});
         Ji = Ji.scalarMultiply(1.0d/Z);
 
         // Enforce observability constraint
-        RealMatrix A = MatrixUtils.createRealMatrix(2,6);
+        RealMatrix A = createRealMatrix(2,6);
         A.setSubMatrix(Ji.multiply(skewSymmetric(pc0)).getData(), 0,0); // TODO
-        A.setSubMatrix(Ji.scalarMultiply(-1).multiply(quaternionToRotation(camState.)),0,3); // TODO: camState.Orientation or OrientationNull?
+        A.setSubMatrix(Ji.scalarMultiply(-1).multiply(quaternionToRotation(camState.orientationNull)).getData(),0,3); // TODO: camState.Orientation or OrientationNull?
         RealVector u = new ArrayRealVector(6);
 
         u.setSubVector(0, quaternionToRotation(camState.orientationNull).operate(ImuState.gravity)); // TODO: is orientNULL correct?
